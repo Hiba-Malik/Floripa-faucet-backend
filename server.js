@@ -69,6 +69,8 @@ const startServer = async () => {
       console.log(`🚀 Azore Faucet Backend running on port ${PORT}`);
       console.log(`Environment: ${process.env.NODE_ENV}`);
       console.log(`Health check: http://localhost:${PORT}/health`);
+      console.log(`RPC URL: ${process.env.RPC_URL || 'http://localhost:10001'}`);
+      console.log(`Admin Address: ${process.env.ADMIN_ADDRESS || 'Not configured'}`);
     });
   } catch (error) {
     console.error('Failed to start server:', error);

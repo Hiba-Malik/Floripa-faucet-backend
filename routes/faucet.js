@@ -4,6 +4,7 @@ const rateLimit = require('express-rate-limit');
 
 const FaucetRequest = require('../models/FaucetRequest');
 const blockchainService = require('../services/blockchain');
+const IPUtils = require('../utils/ipUtils');
 
 const router = express.Router();
 
@@ -47,6 +48,12 @@ router.post('/request', faucetLimiter, async (req, res) => {
     const faucetAmount = parseFloat(process.env.FAUCET_AMOUNT) || 0.5;
     const cooldownHours = parseInt(process.env.COOLDOWN_HOURS) || 24;
 
+    // Extract and validate IP address
+    const clientIP = IPUtils.getRealIP(req);
+    const ipHash = IPUtils.hashIP(clientIP);
+    
+    console.log(`🌐 REQUEST FROM IP: ${clientIP} (Hash: ${ipHash.substring(0, 8)}...)`);
+
     // Validate wallet address
     if (!blockchainService.isValidAddress(walletAddress)) {
       return res.status(400).json({
@@ -54,24 +61,46 @@ router.post('/request', faucetLimiter, async (req, res) => {
       });
     }
 
-    // Check if there's already a pending transaction for this wallet
-    if (pendingTransactions.has(walletAddress.toLowerCase())) {
+    // Check if there's already a pending transaction for this wallet or IP
+    const pendingKey = `${walletAddress.toLowerCase()}_${ipHash}`;
+    if (pendingTransactions.has(walletAddress.toLowerCase()) || pendingTransactions.has(ipHash)) {
       return res.status(429).json({
         error: 'Transaction in progress',
         message: 'Please wait for your previous transaction to complete before making another request.'
       });
     }
 
-    // Check if user can make a request
-    const canRequestInfo = await FaucetRequest.canRequest(walletAddress, cooldownHours);
+    // Check if user can make a request (both wallet and IP restrictions)
+    const canRequestInfo = await FaucetRequest.canRequest(walletAddress, ipHash, cooldownHours);
     
     if (!canRequestInfo.canRequest) {
+      let errorMessage = `You can request tokens again in ${canRequestInfo.hoursRemaining} hours`;
+      let restrictionType = canRequestInfo.restrictionType || 'unknown';
+      
+      // Customize message based on restriction type
+      switch (restrictionType) {
+        case 'wallet':
+          errorMessage = `This wallet address has already requested tokens. Please wait ${canRequestInfo.hoursRemaining} hours.`;
+          break;
+        case 'ip':
+          errorMessage = `This IP address has already been used to request tokens. Please wait ${canRequestInfo.hoursRemaining} hours.`;
+          break;
+        case 'wallet_and_ip':
+        case 'ip_and_wallet':
+          errorMessage = `Both your wallet and IP address have restrictions. Please wait ${canRequestInfo.hoursRemaining} hours.`;
+          break;
+        default:
+          errorMessage = `You can request tokens again in ${canRequestInfo.hoursRemaining} hours`;
+      }
+      
       return res.status(429).json({
         error: 'Request too soon',
-        message: `You can request tokens again in ${canRequestInfo.hoursRemaining} hours`,
+        message: errorMessage,
         hoursRemaining: canRequestInfo.hoursRemaining,
         lastRequestTime: canRequestInfo.lastRequestTime,
-        cooldownHours: cooldownHours
+        cooldownHours: cooldownHours,
+        restrictionType: restrictionType,
+        additionalInfo: canRequestInfo.additionalInfo
       });
     }
 
@@ -84,8 +113,9 @@ router.post('/request', faucetLimiter, async (req, res) => {
       });
     }
 
-    // Add wallet to pending transactions
+    // Add wallet and IP to pending transactions
     pendingTransactions.add(walletAddress.toLowerCase());
+    pendingTransactions.add(ipHash);
     
     let txResult;
     try {
@@ -94,14 +124,15 @@ router.post('/request', faucetLimiter, async (req, res) => {
     } finally {
       // Always remove from pending set, even if transaction fails
       pendingTransactions.delete(walletAddress.toLowerCase());
+      pendingTransactions.delete(ipHash);
     }
 
     // Update or create database record
     let dbRecord;
     if (canRequestInfo.reason === 'new_user') {
-      dbRecord = await FaucetRequest.create(walletAddress, faucetAmount);
+      dbRecord = await FaucetRequest.create(walletAddress, clientIP, ipHash, faucetAmount);
     } else {
-      dbRecord = await FaucetRequest.updateRequest(walletAddress, faucetAmount);
+      dbRecord = await FaucetRequest.updateRequest(walletAddress, clientIP, ipHash, faucetAmount);
     }
 
     res.json({
@@ -140,20 +171,37 @@ router.get('/status/:walletAddress', async (req, res) => {
       });
     }
 
+    // Extract IP for comprehensive status check
+    const clientIP = IPUtils.getRealIP(req);
+    const ipHash = IPUtils.hashIP(clientIP);
+    
     const cooldownHours = parseInt(process.env.COOLDOWN_HOURS) || 24;
-    const canRequestInfo = await FaucetRequest.canRequest(walletAddress, cooldownHours);
+    const canRequestInfo = await FaucetRequest.canRequest(walletAddress, ipHash, cooldownHours);
     const userRecord = await FaucetRequest.findByWalletAddress(walletAddress);
+    
+    // Get IP-specific information
+    const ipRecords = await FaucetRequest.findByIPHash(ipHash);
+    const ipRequestCount = ipRecords.length;
+    const lastIPRequest = ipRecords.length > 0 ? ipRecords[0].last_request_time : null;
 
     res.json({
       walletAddress: walletAddress,
       canRequest: canRequestInfo.canRequest,
-      hoursRemaining: canRequestInfo.hoursRemaining,
+      hoursRemaining: canRequestInfo.hoursRemaining || 0,
       totalReceived: userRecord ? parseFloat(userRecord.total_tokens_received) : 0,
       requestCount: userRecord ? userRecord.request_count : 0,
       lastRequestTime: userRecord ? userRecord.last_request_time : null,
       nextRequestTime: canRequestInfo.canRequest ? 
         new Date().toISOString() : 
-        new Date(Date.now() + canRequestInfo.hoursRemaining * 60 * 60 * 1000).toISOString()
+        new Date(Date.now() + (canRequestInfo.hoursRemaining || 0) * 60 * 60 * 1000).toISOString(),
+      // IP-based restrictions info
+      restrictionType: canRequestInfo.restrictionType || 'none',
+      ipInfo: {
+        requestsFromThisIP: ipRequestCount,
+        lastRequestFromIP: lastIPRequest,
+        isLocalIP: IPUtils.isLocalIP(clientIP)
+      },
+      additionalInfo: canRequestInfo.additionalInfo
     });
 
   } catch (error) {

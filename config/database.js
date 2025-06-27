@@ -87,25 +87,95 @@ const createDatabase = async () => {
 };
 
 const createTables = async () => {
-  const createTableQuery = `
-    CREATE TABLE IF NOT EXISTS faucet_requests (
-      id SERIAL PRIMARY KEY,
-      wallet_address VARCHAR(42) UNIQUE NOT NULL,
-      total_tokens_received DECIMAL(18, 8) DEFAULT 0,
-      last_request_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-      request_count INTEGER DEFAULT 0,
-      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    CREATE INDEX IF NOT EXISTS idx_wallet_address ON faucet_requests(wallet_address);
-    CREATE INDEX IF NOT EXISTS idx_last_request_time ON faucet_requests(last_request_time);
-  `;
-  
   try {
+    // Create the base table first
+    const createTableQuery = `
+      CREATE TABLE IF NOT EXISTS faucet_requests (
+        id SERIAL PRIMARY KEY,
+        wallet_address VARCHAR(42) UNIQUE NOT NULL,
+        total_tokens_received DECIMAL(18, 8) DEFAULT 0,
+        last_request_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        request_count INTEGER DEFAULT 0,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    
     await pool.query(createTableQuery);
+    console.log('Base table created/verified successfully');
+    
+    // Add missing columns if they don't exist
+    await addMissingColumns();
+    
+    // Create indexes
+    await createIndexes();
+    
+    console.log('Database schema updated successfully');
   } catch (error) {
-    console.error('Error creating tables:', error);
+    console.error('Error setting up database schema:', error);
+    throw error;
+  }
+};
+
+const addMissingColumns = async () => {
+  try {
+    // Check if ip_address column exists
+    const checkIpAddressColumn = `
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'faucet_requests' AND column_name = 'ip_address';
+    `;
+    
+    const ipAddressResult = await pool.query(checkIpAddressColumn);
+    
+    if (ipAddressResult.rows.length === 0) {
+      console.log('Adding ip_address column...');
+      await pool.query(`
+        ALTER TABLE faucet_requests 
+        ADD COLUMN ip_address VARCHAR(45) DEFAULT 'unknown' NOT NULL;
+      `);
+    }
+    
+    // Check if ip_hash column exists
+    const checkIpHashColumn = `
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'faucet_requests' AND column_name = 'ip_hash';
+    `;
+    
+    const ipHashResult = await pool.query(checkIpHashColumn);
+    
+    if (ipHashResult.rows.length === 0) {
+      console.log('Adding ip_hash column...');
+      await pool.query(`
+        ALTER TABLE faucet_requests 
+        ADD COLUMN ip_hash VARCHAR(64) DEFAULT 'unknown' NOT NULL;
+      `);
+    }
+    
+    console.log('Missing columns added successfully');
+  } catch (error) {
+    console.error('Error adding missing columns:', error);
+    throw error;
+  }
+};
+
+const createIndexes = async () => {
+  try {
+    const indexQueries = [
+      'CREATE INDEX IF NOT EXISTS idx_wallet_address ON faucet_requests(wallet_address);',
+      'CREATE INDEX IF NOT EXISTS idx_ip_hash ON faucet_requests(ip_hash);',
+      'CREATE INDEX IF NOT EXISTS idx_last_request_time ON faucet_requests(last_request_time);',
+      'CREATE INDEX IF NOT EXISTS idx_wallet_ip_composite ON faucet_requests(wallet_address, ip_hash);'
+    ];
+    
+    for (const query of indexQueries) {
+      await pool.query(query);
+    }
+    
+    console.log('Database indexes created successfully');
+  } catch (error) {
+    console.error('Error creating indexes:', error);
     throw error;
   }
 };

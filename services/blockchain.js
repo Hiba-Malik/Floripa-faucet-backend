@@ -2,12 +2,33 @@ const { Web3 } = require('web3');
 
 class BlockchainService {
   constructor() {
-    this.web3 = new Web3(process.env.RPC_URL || 'http://localhost:10001');
+    const rpcUrl = process.env.RPC_URL || 'http://localhost:10001';
+    console.log(`🔗 Initializing Web3 with RPC: ${rpcUrl}`);
+    
+    this.web3 = new Web3(rpcUrl);
     this.adminPrivateKey = process.env.ADMIN_PRIVATE_KEY;
     this.adminAddress = process.env.ADMIN_ADDRESS;
     
     if (this.adminPrivateKey && !this.adminPrivateKey.startsWith('0x')) {
       this.adminPrivateKey = '0x' + this.adminPrivateKey;
+    }
+    
+    // Test connection on initialization
+    this.testConnection();
+  }
+
+  async testConnection() {
+    try {
+      console.log('🧪 Testing blockchain connection...');
+      const isConnected = await this.web3.eth.net.isListening();
+      const chainId = await this.web3.eth.getChainId();
+      console.log(`✅ Blockchain connected! Chain ID: ${chainId}`);
+      return true;
+    } catch (error) {
+      console.error('❌ Blockchain connection failed:', error.message);
+      console.error('🔍 Check your RPC_URL in .env file');
+      console.error('🔍 Make sure your Azore network is running on the correct port');
+      return false;
     }
   }
 
